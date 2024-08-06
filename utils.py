@@ -1,5 +1,6 @@
 import pickle
 import re
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -211,7 +212,8 @@ def load_model_params():
     model_params = {
         'Logistic Regression' : {
             'penalty': ['l1', 'l2', 'elasticnet', 'none'],
-            'C': [0.01, 0.1, 1, 10, 100, 500, 1000]},
+            'C': [0.001, 0.01, 0.1, 1, 10, 100, 500, 1000],
+            'solver' : ['lbfgs', 'liblinear', 'newton-cg']},
     
         'Naive Bayes' : {
             'var_smoothing': [1e-9, 1e-8, 1e-7, 1e-6, 1e-5]},
@@ -223,27 +225,53 @@ def load_model_params():
         'Decision Tree Classifier' : {
             'criterion': ['gini', 'entropy'],
             'splitter': ['best', 'random'],
-            'max_depth': [None, 10, 20, 30],
-            'min_samples_split': range(2, 10)},
+            'max_depth': [None, 10, 20, 30, 40, 50],
+            'min_samples_split': np.arange(2, 20,2),
+            'min_samples_leaf' : np.arange(2, 20,2),
+            'max_features' : ['sqrt', 'log2']},
         
         'Random Forest' : {
-            'n_estimators': [50, 100, 200],
-            'max_depth': [None, 10, 20],
-            'min_samples_split': [2, 5, 10],
-            'min_samples_leaf': [1, 2, 4],
-            'bootstrap': [True, False]},
+            'criterion' : ['gini', 'entropy'],
+            'n_estimators': [50, 100, 200, 500, 800, 1000, 1200, 1500, 1800],
+            'max_depth': [None, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+            'min_samples_split': np.arange(2, 20, 2),
+            'min_samples_leaf': np.arange(2, 20, 2),
+            'bootstrap': [True, False],
+            'max_samples' :[None, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]},
     
         'LightGBM' : {
-            'n_estimators': [50, 100, 200],
-            'learning_rate': [0.01, 0.1, 0.2],
-            'num_leaves': [31, 50, 100],
-            'boosting_type': ['gbdt', 'dart']}
+            'n_estimators': [50, 100, 200, 500, 800, 1000, 1200, 1500],
+            'learning_rate': [0.001, 0.01, 0.1, 0.2, 0.3],
+            'num_leaves': [31, 50, 80, 100, 120, 150],
+            'max_depth' : [-1, 2, 5, 10, 20, 30],
+            'boosting_type': ['gbdt', 'dart', 'goss'],
+            'min_child_samples' : np.arange(10, 121, 20),
+            'feature_fraction' : np.arange(0.1,1,0.1)}
     }
 
     return model_params
 
+def tune_model(method, model, param_grid, X_train, y_train, scoring='f1', n_iter=10, cv=5, random_state=42):
 
-def train_models(train_data:str, test_data:str, method='random', tune=False, models:dict=None) -> dict:
+    """Tune a model using either GridSearchCV or RandomizedSearchCV and return the best model."""
+
+    # Choose the tuning method based on the 'method' parameter
+    if method == 'grid':
+        search = GridSearchCV(model, param_grid, scoring=scoring, refit='accuracy', cv=cv, n_jobs=-1, verbose=1)
+    elif method == 'random':
+        search = RandomizedSearchCV(model, param_distributions=param_grid, scoring=scoring, refit='accuracy', n_iter=n_iter, cv=cv, n_jobs=-1, verbose=1, random_state=random_state)
+    else:
+        raise ValueError("Invalid method specified. Use 'grid' for GridSearchCV or 'random' for RandomizedSearchCV.")
+
+    # Fit the search to the training data
+    search.fit(X_train, y_train)
+
+    # Return the best model
+    return search.best_estimator_, search.best_score_
+
+
+
+def train_models(train_data:str, test_data:str, method='random', tune=False, scoring='f1', models:dict=None) -> dict:
 
     """
     models to be passed as dictionary with name as key and model as value
@@ -269,8 +297,8 @@ def train_models(train_data:str, test_data:str, method='random', tune=False, mod
 
         if tune:
             model_params = load_model_params()
-            model = tune_model(method, model, param_grid = model_params[name], X_train=X_train, y_train=y_train, 
-                           scoring='accuracy', n_iter=10, cv=5, random_state=42)
+            model, score = tune_model(method, model, param_grid = model_params[name], X_train=X_train, y_train=y_train, 
+                           scoring=scoring, n_iter=10, cv=5, random_state=42)
         
         # Model training
         model.fit(X_train, y_train)
@@ -278,18 +306,20 @@ def train_models(train_data:str, test_data:str, method='random', tune=False, mod
         y_te_pred = model.predict(X_test)
         
         # Model Evaluation
-        train_f1 = f1_score(y_train, y_tr_pred, average='weighted')
-        test_f1 = f1_score(y_test, y_te_pred, average='weighted')
-
-        train_accuracy = accuracy_score(y_train, y_tr_pred)
-        test_accuracy = accuracy_score(y_test, y_te_pred)
-
+        train_f1_micro = f1_score(y_train, y_tr_pred, average='micro')
+        test_f1_micro = f1_score(y_test, y_te_pred, average='micro')
+        train_f1_macro = f1_score(y_train, y_tr_pred, average='macro')
+        test_f1_macro = f1_score(y_test, y_te_pred, average='macro')
+        train_f1_weighted = f1_score(y_train, y_tr_pred, average='weighted')
+        test_f1_weighted = f1_score(y_test, y_te_pred, average='weighted')
+        
         # append the scores
         results.append(
             {'Model': name, 
             'train_data': train_data, 'test_data': test_data,
-            'train_f1':round(train_f1,4), 'test_f1':test_f1.round(4),
-             'train_accuracy' : round(train_accuracy,4), 'test_accuracy': round(test_accuracy,4)
+            'train_f1_micro':round(train_f1_micro,4), 'test_f1_micro':round(test_f1_micro,4),
+            'train_f1_macro':round(train_f1_macro,4), 'test_f1_macro':round(test_f1_macro,4), 
+            'train_f1_weighted':round(train_f1_weighted,4), 'test_f1_weighted':round(test_f1_weighted,4),
             }
         )
 
@@ -306,10 +336,10 @@ def evaluate_model(model, X_train, y_train, X_test, y_test):
     # Model Evaluation
 
     # f1-score
-    train_f1 = f1_score(y_train, y_tr_pred, average='micro')
-    test_f1 = f1_score(y_test, y_te_pred, average='micro')
+    train_f1_micro = f1_score(y_train, y_tr_pred, average='micro')
+    test_f1_micro = f1_score(y_test, y_te_pred, average='micro')
     
-    print('train_f1:', round(train_f1,4), 'test_f1:', round(test_f1,4), '\n')
+    print('micro f1_score- train_f1_micro:', round(train_f1_micro,4), 'test_f1_micro:', round(test_f1_micro,4), '\n')
 
     # Classification report
     report = classification_report(y_train, y_tr_pred)
@@ -385,21 +415,4 @@ def evaluate_model(model, X_train, y_train, X_test, y_test):
     plt.show()
 
 
-def tune_model(method, model, param_grid, X_train, y_train, scoring='accuracy', n_iter=10, cv=5, random_state=42):
-
-    """Tune a model using either GridSearchCV or RandomizedSearchCV and return the best model."""
-
-    # Choose the tuning method based on the 'method' parameter
-    if method == 'grid':
-        search = GridSearchCV(model, param_grid, scoring=scoring, refit='accuracy', cv=cv, n_jobs=-1, verbose=1)
-    elif method == 'random':
-        search = RandomizedSearchCV(model, param_distributions=param_grid, scoring=scoring, refit='accuracy', n_iter=n_iter, cv=cv, n_jobs=-1, verbose=1, random_state=random_state)
-    else:
-        raise ValueError("Invalid method specified. Use 'grid' for GridSearchCV or 'random' for RandomizedSearchCV.")
-
-    # Fit the search to the training data
-    search.fit(X_train, y_train)
-
-    # Return the best model
-    return search.best_estimator_
 
